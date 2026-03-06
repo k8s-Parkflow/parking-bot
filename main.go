@@ -8,16 +8,17 @@ import (
 	"net/http"
 	"os"
 	"time"
+	"github.com/google/uuid"
 )
 
 // 1. JSON 데이터 규격
 type ParkingEvent struct {
-	VehicleNum      string    `json:"vehicle_num"`       // 차량 번호
-	VehicleTypeCode string    `json:"vehicle_type_code"` // 차종 (SEDAN, SUV 등)
-	ZoneID          int       `json:"zone_id"`           // 구역 ID
-	SlotCode        string    `json:"slot_code"`         // 슬롯 코드
-	Occupied        bool      `json:"occupied"`          // true(입차), false(출차)
-	UpdateAt        time.Time `json:"update_at"`         // 이벤트 발생 시간
+	VehicleNum      string    `json:"vehicle_num"`     
+	VehicleType     string    `json:"vehicle_type"` 
+	ZoneID          int       `json:"zone_id"`         
+	SlotCode        string    `json:"slot_code"`         
+	Status          string    `json:"status"`       
+	UpdateAt        time.Time `json:"update_at"`    
 }
 
 // 2. 가상의 차량 번호판 생성 함수
@@ -31,7 +32,7 @@ func generatePlate() string {
 
 // 3. 가상의 차종(enum) 생성 함수
 func generateVehicleType() string {
-	types := []string{"SEDAN", "SUV", "TRUCK", "COMPACT"}
+	types := []string{"GENERAL", "EV", "DISABLED"}
 	return types[rand.Intn(len(types))]
 }
 
@@ -40,14 +41,22 @@ func sendParkingEvent(apiUrl string) {
 	zoneID := rand.Intn(100) + 1
 	slotNum := rand.Intn(100) + 1
 	slotCode := fmt.Sprintf("Z%d-%03d", zoneID, slotNum)
-	isOccupied := rand.Intn(2) == 1
+
+	isParked := rand.Intn(2) == 1
+	statusStr := "EXITED"
+	actionText := "출차(EXIT)"
+	
+	if isParked {
+		statusStr = "PARKED"
+		actionText = "입차(ENTRY)"
+	}
 
 	event := ParkingEvent{
 		VehicleNum:      generatePlate(),
-		VehicleTypeCode: generateVehicleType(),
+		VehicleType:     generateVehicleType(),
 		ZoneID:          zoneID,
 		SlotCode:        slotCode,
-		Occupied:        isOccupied,
+		Status:          statusStr,
 		UpdateAt:        time.Now(),
 	}
 
@@ -57,19 +66,25 @@ func sendParkingEvent(apiUrl string) {
 		return
 	}
 
-	// 💡 백엔드로 POST 요청 (에러가 나도 봇이 죽지 않도록 독립적으로 실행됨)
-	resp, err := http.Post(apiUrl, "application/json", bytes.NewBuffer(jsonData))
-
-	actionText := "출차(EXIT)"
-	if isOccupied {
-		actionText = "입차(ENTRY)"
+	// 💡 5. HTTP 요청 객체 생성
+	req, err := http.NewRequest("POST", apiUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("❌ HTTP 요청 생성 오류:", err)
+		return
 	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", uuid.New().String()) // 매번 새로운 UUID 생성하여 중복 방지
+
+	// 💡 백엔드로 POST 요청 발송
+	client := &http.Client{}
+	resp, err := client.Do(req)
 
 	if err != nil {
 		fmt.Printf("❌ 전송 실패 | %s | %s | 사유: %v\n", actionText, event.VehicleNum, err)
 	} else {
+		defer resp.Body.Close()
 		fmt.Printf("✅ 전송 성공 | %s | %s | Zone: %d | 상태 코드: %d\n", actionText, event.VehicleNum, event.ZoneID, resp.StatusCode)
-		resp.Body.Close()
 	}
 }
 
@@ -80,6 +95,7 @@ func main() {
 	// 환경 변수에서 API 주소 가져오기 (없으면 로컬 주소 사용)
 	apiUrl := os.Getenv("API_URL")
 	if apiUrl == "" {
+		//apiUrl = "https://httpbin.org/post"
 		apiUrl = "http://localhost:8000/api/v1/parking/event"
 		fmt.Println("⚠️ API_URL 환경 변수가 없어 기본값(localhost)을 사용합니다.")
 	}
