@@ -1,7 +1,8 @@
 # 1단계: 빌드 환경 (Go 설치된 환경에서 리눅스용 실행 파일로 빌드)
 FROM golang:1.22 AS builder
 WORKDIR /app
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY main.go ./
 # 쿠버네티스(리눅스) 환경에 맞춰서 빌드
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o parking-bot main.go
