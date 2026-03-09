@@ -24,7 +24,7 @@ type ParkingEvent struct {
 // 2. 가상의 차량 번호판 생성 함수
 func generatePlate() string {
 	chars := []string{"가", "나", "다", "라", "마", "바", "사", "아", "자", "차"}
-	front := rand.Intn(90) + 10 // 10 ~ 99
+	front := rand.Intn(990) + 10 // 10 ~ 999
 	char := chars[rand.Intn(len(chars))]
 	back := rand.Intn(9000) + 1000 // 1000 ~ 9999
 	return fmt.Sprintf("%02d%s%04d", front, char, back)
