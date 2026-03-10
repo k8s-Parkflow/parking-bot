@@ -1,5 +1,5 @@
 # 1단계: 빌드 환경 (Go 설치된 환경에서 리눅스용 실행 파일로 빌드)
-FROM golang:1.22 AS builder
+FROM golang:1.25 AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
