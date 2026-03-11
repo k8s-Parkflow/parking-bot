@@ -68,7 +68,7 @@ spec:
                                 branch: 'main'
                             
                             // 2. 봇의 매니페스트 파일 경로 (Deploy 레포지토리 내의 경로)
-                            def botManifest = "backend/parking-bot-deployment.yaml"
+                            def botManifest = "parking-bot/parking-bot-deployment.yaml"
                             
                             if (fileExists(botManifest)) {
                                 // sed 명령어로 이미지 태그만 쏙 바꿉니다.
