@@ -1,195 +1,157 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"math/rand"
-	"net/http"
-	"os"
-	"sync"
-	"time"
+        "bytes"
+        "encoding/json"
+        "fmt"
+        "math/rand"
+        "net/http"
+        "os"
+        "strings"
+        "sync"
+        "time"
 
-	"github.com/google/uuid"
+        "github.com/google/uuid"
 )
 
-// 1. JSON 데이터 규격
 type ParkingEvent struct {
-	VehicleNum  string    `json:"vehicle_num"`
-	VehicleType string    `json:"vehicle_type"`
-	ZoneID      int       `json:"zone_id"`
-	SlotCode    string    `json:"slot_code"`
-	Status      string    `json:"status"`
-	UpdateAt    time.Time `json:"update_at"`
+        VehicleNum  string `json:"vehicle_num"`
+        VehicleType string `json:"vehicle_type"`
+        ZoneID      int    `json:"zone_id"`
+        SlotID      int    `json:"slot_id"`
+        Status      string `json:"status"`
+        RequestedAt string `json:"requested_at"`
 }
 
-// 차량 정보 구조체
 type ParkedCar struct {
-	VehicleNum  string
-	VehicleType string
-	ZoneID      int
+        VehicleNum  string
+        VehicleType string
+        SlotID      int
 }
 
 var (
-	// 현재 주차된 차량들을 기억하는 메모리 장부 (Key: SlotCode)
-	parkingLot = make(map[string]ParkedCar)
-
-	// 여러 고루틴이 동시에 장부를 건드리지 못하게 막는 자물쇠
-	lotMutex sync.Mutex
+        parkingLot  = make(map[int]ParkedCar)
+        lotMutex    sync.Mutex
+        maxSlots    = 1000 // DB에 생성한 슬롯 1000개
 )
 
-// 2. 가상의 차량 번호판 생성 함수
-func generatePlate() string {
-	chars := []string{"가", "나", "다", "라", "마", "바", "사", "아", "자", "차"}
-	front := rand.Intn(990) + 10 // 10 ~ 999
-	char := chars[rand.Intn(len(chars))]
-	back := rand.Intn(9000) + 1000 // 1000 ~ 9999
-	return fmt.Sprintf("%02d%s%04d", front, char, back)
+// 🚀 DB에 미리 등록한 100가1001 ~ 2000 번호판만 생성
+func generateRegisteredPlate() string {
+        num := rand.Intn(1000) + 1001
+        return fmt.Sprintf("100가%d", num)
 }
 
-// 3. 가상의 차종(enum) 생성 함수
-func generateVehicleType() string {
-	types := []string{"GENERAL", "EV", "DISABLED"}
-	return types[rand.Intn(len(types))]
-}
+func sendParkingEvent(baseApiUrl string, event ParkingEvent) {
+        var targetUrl string
+        action := ""
+        cleanBaseUrl := strings.TrimRight(baseApiUrl, "/")
 
-// 4. 실제로 HTTP 요청을 쏘는 함수 (고루틴으로 비동기 실행됨)
-func sendParkingEvent(apiUrl string, event ParkingEvent) {
-	actionText := "출차(EXIT)"
-	if event.Status == "PARKED" {
-		actionText = "입차(ENTRY)"
-	}
+        if event.Status == "PARKED" {
+                targetUrl = cleanBaseUrl + "/entries/"
+                action = "입차(ENTRY)"
+        } else {
+                targetUrl = cleanBaseUrl + "/exits/"
+                action = "출차(EXIT)"
+        }
 
-	jsonData, err := json.Marshal(event)
-	if err != nil {
-		fmt.Println("❌ JSON 변환 오류:", err)
-		return
-	}
+        jsonData, _ := json.Marshal(event)
 
-	req, err := http.NewRequest("POST", apiUrl, bytes.NewBuffer(jsonData))
-	if err != nil {
-		fmt.Println("❌ HTTP 요청 생성 오류:", err)
-		return
-	}
+        req, err := http.NewRequest("POST", targetUrl, bytes.NewBuffer(jsonData))
+        if err != nil {
+                fmt.Printf("❌ [%s] 요청 생성 실패: %v\n", action, err)
+                return
+        }
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", uuid.New().String())
+        req.Header.Set("Content-Type", "application/json")
+        req.Header.Set("Idempotency-Key", uuid.New().String())
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+        client := &http.Client{Timeout: 10 * time.Second}
+        resp, err := client.Do(req)
+        if err != nil {
+                fmt.Printf("❌ [%s] 네트워크 오류: %v\n", action, err)
+                return
+        }
+        defer resp.Body.Close()
 
-	if err != nil {
-		fmt.Printf("❌ 전송 실패 | %s | %s | 사유: %v\n", actionText, event.VehicleNum, err)
-		return
-	}
-	defer resp.Body.Close()
-	fmt.Printf("✅ 전송 성공 | %s | %s | Zone: %d | Slot: %s | 상태 코드: %d\n", actionText, event.VehicleNum, event.ZoneID, event.SlotCode, resp.StatusCode)
+        if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+                fmt.Printf("✅ [%s] 성공 | 차량:%s | 슬롯:%d\n", action, event.VehicleNum, event.SlotID)
+        } else {
+                fmt.Printf("⚠️ [%s] 거절 | 코드:%d | 차량:%s | 슬롯:%d\n", action, resp.StatusCode, event.VehicleNum, event.SlotID)
+        }
 }
 
 func main() {
-	apiUrl := os.Getenv("API_URL")
-	if apiUrl == "" {
-		apiUrl = "https://httpbin.org/post"
-		//apiUrl = "http://localhost:8000/api/v1/parking/event"
-		fmt.Println("⚠️ API_URL 환경 변수가 없어 기본값(localhost)을 사용합니다.")
-	}
+        apiUrl := os.Getenv("API_URL")
+        if apiUrl == "" {
+                apiUrl = "http://orchestration-http:8000/api/v1/parking"
+        }
 
-	fmt.Printf("🚀 주차장 트래픽 봇 가동 시작 (타겟: %s)\n", apiUrl)
+        rand.Seed(time.Now().UnixNano())
+        fmt.Printf("🚀 등록 차량 전용 트래픽 봇 가동 (Target: %s)\n", apiUrl)
 
-	for {
-		now := time.Now()
-		hour := now.Hour()
+        for {
+                lotMutex.Lock()
 
-		var burstCount int
-		var sleepTime time.Duration
+                // 입차할지 출차할지 결정 (입차 확률 70%)
+                isEntry := true
+                if len(parkingLot) >= maxSlots {
+                        isEntry = false
+                } else if len(parkingLot) > 0 {
+                        isEntry = rand.Intn(10) < 7
+                }
 
-		if (hour >= 8 && hour <= 9) || (hour >= 18 && hour <= 19) {
-			burstCount = 10
-			sleepTime = 1 * time.Second
-		} else if hour >= 0 && hour <= 5 {
-			burstCount = 1
-			sleepTime = 10 * time.Second
-		} else {
-			burstCount = 1
-			sleepTime = 2 * time.Second
-		}
+                if isEntry {
+                        // 빈 슬롯 찾기 시도
+                        slotID := rand.Intn(maxSlots) + 1
+                        currentZoneID := ((slotID - 1) / 100) + 1
+                        if _, exists := parkingLot[slotID]; !exists {
+                                plate := generateRegisteredPlate()
+                                vType := "GENERAL" // DB 등록 시 기본값으로 맞춤
 
-		for i := 0; i < burstCount; i++ {
-			// 장부 조작 시작 전 자물쇠 채우기 (데이터 충돌 방지)
-			lotMutex.Lock()
+                                // 이미 주차된 차량인지 체크 (중복 입차 방지)
+                                alreadyParked := false
+                                for _, car := range parkingLot {
+                                        if car.VehicleNum == plate {
+                                                alreadyParked = true
+                                                break
+                                        }
+                                }
 
-			isEntry := true
-			// 주차장에 차가 1대라도 있으면, 50% 확률로 입차/출차 결정
-			if len(parkingLot) > 0 {
-				isEntry = rand.Intn(2) == 0
-			}
+                                if !alreadyParked {
+                                        parkingLot[slotID] = ParkedCar{VehicleNum: plate, VehicleType: vType, SlotID: slotID}
+                                        event := ParkingEvent{
+                                                VehicleNum:  plate,
+                                                VehicleType: vType,
+                                                ZoneID:      currentZoneID,
+                                                SlotID:      slotID,
+                                                Status:      "PARKED",
+                                                RequestedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+                                        }
+                                        go sendParkingEvent(apiUrl, event)
+                                }
+                        }
+                } else if len(parkingLot) > 0 {
+                        // 주차된 차 중 하나 무작위 출차
+                        var targetSlot int
+                        for sID := range parkingLot {
+                                targetSlot = sID
+                                break
+                        }
+                        currentZoneID := ((targetSlot - 1) / 100) + 1
+                        car := parkingLot[targetSlot]
+                        event := ParkingEvent{
+                                VehicleNum:  car.VehicleNum,
+                                VehicleType: car.VehicleType,
+                                ZoneID:      currentZoneID,
+                                SlotID:      targetSlot,
+                                Status:      "EXITED",
+                                RequestedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+                        }
+                        delete(parkingLot, targetSlot)
+                        go sendParkingEvent(apiUrl, event)
+                }
 
-			var event ParkingEvent
-
-			if isEntry {
-				// ======= [입차 로직] =======
-				var slotCode string
-				var zoneID int
-				// 빈 자리 찾을 때까지 무한 반복
-				for {
-					zoneID = rand.Intn(100) + 1
-					slotNum := rand.Intn(100) + 1
-					slotCode = fmt.Sprintf("Z%d-%03d", zoneID, slotNum)
-					// 장부에 없는 자리면 통과!
-					if _, exists := parkingLot[slotCode]; !exists {
-						break
-					}
-				}
-
-				plate := generatePlate()
-				vType := generateVehicleType()
-
-				// 장부에 새로 입차한 차 기록하기
-				parkingLot[slotCode] = ParkedCar{
-					VehicleNum:  plate,
-					VehicleType: vType,
-					ZoneID:      zoneID,
-				}
-
-				event = ParkingEvent{
-					VehicleNum:  plate,
-					VehicleType: vType,
-					ZoneID:      zoneID,
-					SlotCode:    slotCode,
-					Status:      "PARKED",
-					UpdateAt:    time.Now(),
-				}
-			} else {
-				// ======= [출차 로직] =======
-				var exitSlot string
-				var carToExit ParkedCar
-
-				// 장부를 훑어서 아무 차나 한 대 뽑기 (Go의 map 순회는 무작위로 작동함)
-				for slot, car := range parkingLot {
-					exitSlot = slot
-					carToExit = car
-					break // 한 대만 찾으면 바로 멈춤
-				}
-
-				// 장부에서 해당 차량 지우기 (출차 처리)
-				delete(parkingLot, exitSlot)
-
-				event = ParkingEvent{
-					VehicleNum:  carToExit.VehicleNum,  // 입차했던 차 번호 그대로
-					VehicleType: carToExit.VehicleType, // 입차했던 차종 그대로
-					ZoneID:      carToExit.ZoneID,
-					SlotCode:    exitSlot, // 입차했던 자리 그대로
-					Status:      "EXITED",
-					UpdateAt:    time.Now(),
-				}
-			}
-
-			// 장부 조작이 끝났으니 자물쇠 풀기
-			lotMutex.Unlock()
-
-			go sendParkingEvent(apiUrl, event)
-		}
-
-		time.Sleep(sleepTime)
-	}
+                lotMutex.Unlock()
+                time.Sleep(3 * time.Second)
+        }
 }
