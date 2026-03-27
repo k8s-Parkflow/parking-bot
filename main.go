@@ -109,34 +109,40 @@ func main() {
 		if isEntry {
 			slotID := rand.Intn(maxSlots) + 1
 			if _, exists := parkingLot[slotID]; !exists {
-				plate := generateRegisteredPlate()
-				vType := getVehicleTypeByPlate(plate)
-				
-				// 🚀 핵심: 슬롯 타입과 차량 타입 비교
+				// 🚀 수정된 섹션: 슬롯 타입에 맞는 차량을 찾을 때까지 생성 시도
 				sType := getSlotType(slotID)
+				var plate string
+				var vType string
 				
-				if vType == sType {
-					alreadyParked := false
-					for _, car := range parkingLot {
-						if car.VehicleNum == plate {
-							alreadyParked = true
-							break
-						}
+				for {
+					plate = generateRegisteredPlate()
+					vType = getVehicleTypeByPlate(plate)
+					if vType == sType {
+						break
 					}
+				}
+				
+				// 🚀 이후 로직 동일
+				alreadyParked := false
+				for _, car := range parkingLot {
+					if car.VehicleNum == plate {
+						alreadyParked = true
+						break
+					}
+				}
 
-					if !alreadyParked {
-						currentZoneID := ((slotID - 1) / 100) + 1
-						parkingLot[slotID] = ParkedCar{VehicleNum: plate, VehicleType: vType, SlotID: slotID}
-						event := ParkingEvent{
-							VehicleNum:  plate,
-							VehicleType: vType,
-							ZoneID:      currentZoneID,
-							SlotID:      slotID,
-							Status:      "PARKED",
-							RequestedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-						}
-						go sendParkingEvent(apiUrl, event)
+				if !alreadyParked {
+					currentZoneID := ((slotID - 1) / 100) + 1
+					parkingLot[slotID] = ParkedCar{VehicleNum: plate, VehicleType: vType, SlotID: slotID}
+					event := ParkingEvent{
+						VehicleNum:  plate,
+						VehicleType: vType,
+						ZoneID:      currentZoneID,
+						SlotID:      slotID,
+						Status:      "PARKED",
+						RequestedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 					}
+					go sendParkingEvent(apiUrl, event)
 				}
 			}
 		} else if len(parkingLot) > 0 {
@@ -160,6 +166,6 @@ func main() {
 		}
 
 		lotMutex.Unlock()
-		time.Sleep(1 * time.Second) // 타입 매칭 실패 시 재시도 간격을 짧게 조정
+		time.Sleep(1 * time.Second)
 	}
 }
